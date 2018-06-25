@@ -72,6 +72,9 @@ func registerRule(m map[string]setupFunc, app *kingpin.Application, name string)
 	gcsBucket := cmd.Flag("gcs.bucket", "Google Cloud Storage bucket name for stored blocks. If empty, ruler won't store any block inside Google Cloud Storage.").
 		PlaceHolder("<bucket>").String()
 
+	externalQueryURL := cmd.Flag("external.query.url", "The external Thanos Query URL").
+		PlaceHolder("<bucket>").String()
+
 	s3Config := s3.RegisterS3Params(cmd)
 
 	m[name] = func(g *run.Group, logger log.Logger, reg *prometheus.Registry, tracer opentracing.Tracer, _ bool) error {
@@ -83,6 +86,10 @@ func registerRule(m map[string]setupFunc, app *kingpin.Application, name string)
 		if err != nil {
 			return errors.Wrap(err, "new cluster peer")
 		}
+		externalQueryURL, err := url.Parse(*externalQueryURL)
+		if err != nil {
+			return errors.Wrap(err, "parse external query url")
+		}
 
 		tsdbOpts := &tsdb.Options{
 			MinBlockDuration: model.Duration(*tsdbBlockDuration),
@@ -91,7 +98,7 @@ func registerRule(m map[string]setupFunc, app *kingpin.Application, name string)
 			NoLockfile:       true,
 			WALFlushInterval: 30 * time.Second,
 		}
-		return runRule(g, logger, reg, tracer, lset, *alertmgrs, *grpcBindAddr, *httpBindAddr, *evalInterval, *dataDir, *ruleFiles, peer, *gcsBucket, s3Config, tsdbOpts, name)
+		return runRule(g, logger, reg, tracer, lset, *alertmgrs, *grpcBindAddr, *httpBindAddr, *evalInterval, *dataDir, *ruleFiles, peer, *gcsBucket, s3Config, tsdbOpts, name, externalQueryURL)
 	}
 }
 
@@ -114,6 +121,7 @@ func runRule(
 	s3Config *s3.Config,
 	tsdbOpts *tsdb.Options,
 	component string,
+	externalQueryURL *url.URL,
 ) error {
 	db, err := tsdb.Open(dataDir, log.With(logger, "component", "tsdb"), reg, tsdbOpts)
 	if err != nil {
@@ -188,7 +196,7 @@ func runRule(
 			NotifyFunc:  notify,
 			Logger:      log.With(logger, "component", "rules"),
 			Appendable:  tsdb.Adapter(db, 0),
-			ExternalURL: nil,
+			ExternalURL: externalQueryURL,
 		})
 		g.Add(func() error {
 			mgr.Run()
